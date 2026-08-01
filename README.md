@@ -22,7 +22,7 @@ ranked, explained top-5. What makes it more than the original class assignment i
 **agentic self-check layer**: instead of running the scoring rule once and printing
 whatever comes out, the system plans a scoring strategy, acts on it, checks its own top
 result against explicit guardrails, and retries with an adjusted strategy when a check
-fails — or honestly reports low confidence when it can't fix what it finds.
+fails or honestly reports low confidence when it can't fix what it finds.
 
 This matters beyond music recommendations: any system that turns a score into a
 confident-sounding answer (a recommender, a classifier, an LLM response) can be
