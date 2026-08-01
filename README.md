@@ -90,6 +90,37 @@ flowchart LR
     E --> F[Output: ranked recommendations]
 ```
 
+A full component-level view (including the agentic layer below) is in
+[`diagrams/architecture.mmd`](diagrams/architecture.mmd).
+
+### Agentic Workflow: Plan → Act → Check
+
+Calling `recommend_songs()` once and trusting the output has a known blind spot (see
+"Limitations and Risks" below): a strong genre+mood match can outrank every other song
+even when its energy is nowhere near what the user asked for, and the plain score never
+signals that this happened. `src/agent.py` wraps the scoring pipeline in a self-checking
+loop instead of a single pass:
+
+1. **Plan** — pick a set of scoring weights (starts at the defaults: genre +2.0, mood
+   +1.0, energy ×1.0, acoustic +0.5).
+2. **Act** — run `recommend_songs()` with those weights to get a ranked top-k list.
+3. **Check** — inspect the #1 pick against two guardrails: is its energy actually close
+   to the user's `target_energy` (within 0.35), even if genre/mood matched? Is its score
+   high enough (≥ 1.0) to call the match "confident"?
+4. **Re-plan or stop** — if the energy gap is the problem, raise the energy weight and
+   retry (up to 3 attempts total). If the issue *can't* be fixed by re-weighting — e.g.
+   there's no genre/mood match in the catalog at all, so no weight change will conjure
+   one — the agent stops immediately instead of burning attempts on a fix it knows won't
+   work.
+
+The agent can't rewrite the song catalog, so a bad match sometimes can't be resolved by
+re-weighting alone — but it will always report that honestly (a `⚠️ Low confidence`
+banner plus the specific issue) instead of presenting a bad recommendation as a good one.
+Every attempt, weight change, and guardrail decision is logged to both the console and
+`logs/app.log`. See `src/agent.py` for the full loop and `tests/test_agent.py` for the
+cases it's checked against (a clean match, the adversarial energy-mismatch case, a
+no-match-at-all case, and an empty catalog).
+
 ### Expected Bias
 
 This system likely over-prioritizes **genre** (worth 2x a mood match), so a song that's a
@@ -123,50 +154,78 @@ pip install -r requirements.txt
 python -m src.main
 ```
 
+### Logs
+
+Every run writes to `logs/app.log` (auto-created, git-ignored) in addition to the
+console, so the agent's plan/act/check decisions for each profile are traceable after
+the fact — not just visible in the moment.
+
 ### Running Tests
 
-Run the starter tests with:
+Run the full test suite with:
 
 ```bash
 pytest
 ```
 
-You can add more tests in `tests/test_recommender.py`.
+`tests/test_recommender.py` covers the scoring/ranking rules; `tests/test_agent.py`
+covers the plan → act → check loop (a clean match, the adversarial energy-mismatch
+case, a no-match case, and an empty catalog).
 
 ---
 
 ## Sample Recommendation Output
 
-Output of `python -m src.main` for the default `genre=pop, mood=happy, energy=0.8` profile:
+Actual output of `python -m src.main` (console logging lines omitted for readability —
+see `logs/app.log` for the full agent trace). Note the `⚠️ Low confidence` banner on the
+adversarial profile: the agent tried raising the energy weight three times, couldn't
+manufacture an energy match that isn't in the catalog, and flagged it instead of hiding
+it — this is the concrete fix for the "silent failure" case in Limitations below.
 
 ```
-Loading songs from data/songs.csv...
-Loaded songs: 18
-
-User profile: genre=pop, mood=happy, energy=0.8
+=== High-Energy Pop ===
+User profile: {'genre': 'pop', 'mood': 'happy', 'energy': 0.9, 'likes_acoustic': False}
 
 Top recommendations:
 
 1. Sunrise City — Neon Echo (pop/happy)
-   Score: 3.98
-   Because: genre match (+2.0), mood match (+1.0), energy closeness (+0.98)
+   Score: 3.92
+   Because: genre match (+2.00), mood match (+1.00), energy closeness (+0.92)
 
 2. Gym Hero — Max Pulse (pop/intense)
-   Score: 2.87
-   Because: genre match (+2.0), energy closeness (+0.87)
+   Score: 2.97
+   Because: genre match (+2.00), energy closeness (+0.97)
 
 3. Rooftop Lights — Indigo Parade (indie pop/happy)
-   Score: 1.96
-   Because: mood match (+1.0), energy closeness (+0.96)
+   Score: 1.86
+   Because: mood match (+1.00), energy closeness (+0.86)
 
-4. Night Drive Loop — Neon Echo (synthwave/moody)
-   Score: 0.95
-   Because: energy closeness (+0.95)
+4. Storm Runner — Voltline (rock/intense)
+   Score: 0.99
+   Because: energy closeness (+0.99)
 
 5. Sunset Highway — Coral Drift (house/euphoric)
-   Score: 0.92
-   Because: energy closeness (+0.92)
+   Score: 0.98
+   Because: energy closeness (+0.98)
+
+=== Adversarial: High-Energy Melancholy ===
+User profile: {'genre': 'classical', 'mood': 'melancholy', 'energy': 0.9, 'likes_acoustic': False}
+
+⚠️  Low confidence after 3 attempt(s): energy_mismatch: top pick's energy (0.20) is 0.70 away from the requested target (0.90)
+
+Top recommendations:
+
+1. Rainlight Sonata — Elena Cho (classical/melancholy)
+   Score: 3.90
+   Because: genre match (+2.00), mood match (+1.00), energy closeness (+0.90)
+
+2. Storm Runner — Voltline (rock/intense)
+   Score: 2.97
+   Because: energy closeness (+2.97)
 ```
+
+"Chill Lofi" and "Deep Intense Rock" both pass the agent's guardrails on the first
+attempt — see `logs/app.log` after a run for the full four-profile output and trace.
 
 **Screenshot or video** *(optional)*: <!-- Insert a screenshot or demo video link here -->
 
@@ -209,13 +268,16 @@ Intense Rock" both get confident, well-matched top picks, while the adversarial
 - **Exact-string genre/mood matching:** `"pop"` and `"indie pop"` are treated as completely
   unrelated, even though "Rooftop Lights" (indie pop/happy) is a close conceptual match for a
   pop/happy profile. The system has no concept of genre similarity or hierarchy.
-- **Conflicting preferences produce a "least-bad" answer, not a good one:** the adversarial
-  "High-Energy Melancholy" profile (genre=classical, mood=melancholy, energy=0.9) still
-  returns the one classical/melancholy song in the catalog as the top pick, even though its
-  actual energy (0.20) is nowhere close to the requested 0.9 — the flat +2.0/+1.0 genre and
-  mood bonuses dominate over the energy term (capped at +1.0), so the system can't tell the
-  difference between "great match with one contradictory feature" and "great match, full
-  stop."
+- **Conflicting preferences still produce a "least-bad" answer, not a good one:** the
+  adversarial "High-Energy Melancholy" profile (genre=classical, mood=melancholy,
+  energy=0.9) still returns the one classical/melancholy song in the catalog as the top
+  pick, even though its actual energy (0.20) is nowhere close to the requested 0.9 — the
+  flat genre and mood bonuses dominate over the energy term. The agentic layer
+  (`src/agent.py`) tries to fix this by raising the energy weight and retrying, but a
+  weight change can't invent a better-matching song that isn't in an 18-song catalog. What
+  it *does* fix: the mismatch is no longer silent — the CLI now prints an explicit
+  `⚠️ Low confidence` warning naming the exact gap, instead of reporting a 3.90 score with
+  no signal anything was wrong.
 - **No sense of lyrics, language, or cultural context** — everything is numeric/categorical
   metadata (genre, mood, energy, tempo, valence, danceability, acousticness).
 - **Single-profile assumption:** `UserProfile` can only express one favorite genre and one

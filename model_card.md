@@ -39,6 +39,17 @@ profiles in one pass (instead of just one hardcoded profile) and to print an exp
 string alongside every score, so the "why" is visible for every recommendation, not just the
 top one.
 
+**Agentic self-check layer (`src/agent.py`):** rather than call the scorer once and trust the
+result, the CLI now runs a plan → act → check loop for every profile. It plans a set of
+scoring weights (starting at the defaults), acts by scoring and ranking the catalog, and
+checks the #1 pick against two guardrails — is its energy within 0.35 of the requested
+target, and is its score above a confidence floor of 1.0? If a check fails and the failure is
+one weight-tuning can plausibly fix (an energy gap), it raises the energy weight and retries,
+up to 3 attempts. If the failure can't be fixed that way — e.g. no genre/mood match exists in
+the catalog at all — it stops immediately rather than retrying blindly. Every attempt is
+logged to `logs/app.log`. This directly targets the "silent failure" bias described in
+Section 6: it can't fix a data-level gap, but it will name the gap instead of hiding it.
+
 ---
 
 ## 4. Data
@@ -78,9 +89,13 @@ top one.
   than the entire energy term (capped at +1.0), a song can win purely on genre/mood even when
   its energy is a poor fit. Tested directly with the adversarial profile
   `{genre: classical, mood: melancholy, energy: 0.9}` — "Rainlight Sonata" (the catalog's only
-  classical/melancholy song) still ranked #1 even though its actual energy is 0.20, nowhere
-  near the requested 0.9. The system reported it as a strong match (score 3.30) with no signal
-  that the energy request was badly violated.
+  classical/melancholy song) still ranks #1 even though its actual energy is 0.20, nowhere
+  near the requested 0.9. **Update:** the plain scoring rule still reports this as a 3.30-score
+  match with no signal anything is wrong — but as of the agentic self-check layer
+  (`src/agent.py`, see Section 3), the *system* no longer does. The agent tries raising the
+  energy weight up to twice, can't out-weight a data-level gap that large, and reports a
+  `⚠️ Low confidence` warning naming the exact mismatch instead of presenting the 3.90-score
+  result as confident. See Section 7 for the actual run.
 - **Catalog-size bias:** with only 1-3 songs per genre, "diversity" in the top 5 usually just
   means "songs that happen to share the user's energy level," not real stylistic variety.
 - **Single-facet user model:** `UserProfile` can't express "I like rock or jazz" or partial/
@@ -132,15 +147,36 @@ matches, and they do. "Chill Lofi" is the strongest run of all four, because the
 three lofi songs to draw from, so the acoustic bonus and energy closeness meaningfully
 separate the top 3 instead of everything tying near zero.
 
-The **adversarial profile is where the system's real weakness shows up**: it confidently
-returns "Rainlight Sonata" as a 3.30-scoring top pick for a user who explicitly wants
-high energy, purely because it's the only genre+mood match in the catalog. In plain terms —
-imagine telling a friend "I want something classical and melancholy, but really pumped up,"
-and they hand you the slowest, saddest track in their library and call it a perfect match.
-That's the system failing silently: nothing in the score or explanation string flags that the
-energy request was almost completely ignored. This is the same dynamic as the "Gym Hero
-keeps showing up for Happy Pop fans" pattern — the score rewards partial matches without ever
-signaling *how* partial they are.
+The **adversarial profile is where the system's real weakness shows up**: the plain scoring
+rule confidently returns "Rainlight Sonata" as a 3.30-scoring top pick for a user who
+explicitly wants high energy, purely because it's the only genre+mood match in the catalog.
+In plain terms — imagine telling a friend "I want something classical and melancholy, but
+really pumped up," and they hand you the slowest, saddest track in their library and call it
+a perfect match. That's the system failing silently: nothing in the score or explanation
+string flags that the energy request was almost completely ignored. This is the same dynamic
+as the "Gym Hero keeps showing up for Happy Pop fans" pattern — the score rewards partial
+matches without ever signaling *how* partial they are.
+
+**Agent run on the same adversarial profile** (`src/agent.py`, actual output):
+
+```
+=== Adversarial: High-Energy Melancholy ===
+User profile: {'genre': 'classical', 'mood': 'melancholy', 'energy': 0.9, 'likes_acoustic': False}
+
+⚠️  Low confidence after 3 attempt(s): energy_mismatch: top pick's energy (0.20) is 0.70 away from the requested target (0.90)
+
+1. Rainlight Sonata — Elena Cho (classical/melancholy)
+   Score: 3.90
+   Because: genre match (+2.00), mood match (+1.00), energy closeness (+0.90)
+```
+
+The agent's trace (`logs/app.log`) shows it raised the energy weight from 1.0 → 2.0 → 3.0
+across three attempts, and "Rainlight Sonata" stayed the #1 pick every time — its 0.70 energy
+gap is too large for any energy weight to out-score a genre+mood match in this catalog. The
+score itself even changed (3.30 → 3.60 → 3.90 across attempts) while the actual match quality
+didn't improve at all, which is a good illustration of why the guardrail checks the *gap*
+directly rather than trusting the score to reflect it. The headline result: the top pick is
+unchanged, but the system's behavior changed from confidently wrong to honestly uncertain.
 
 Re-ran "High-Energy Pop" and "Deep Intense Rock" with genre-match weight halved (2.0 → 1.0)
 and energy-closeness weight doubled (1.0 → 2.0). Full results are in the README's
@@ -156,9 +192,13 @@ any single energy-only score in this catalog.
 
 - Replace exact-string genre matching with a similarity/hierarchy mapping (e.g. "indie pop"
   partially credits a "pop" preference) so related genres aren't scored as total mismatches.
-- Add a penalty (not just a missing bonus) when a strong genre/mood match comes with a badly
+- ~~Add a penalty (not just a missing bonus) when a strong genre/mood match comes with a badly
   mismatched energy level, so the adversarial-profile failure mode above surfaces in the score
-  itself instead of only in a human reading the explanation.
+  itself instead of only in a human reading the explanation.~~ **Done, via a different
+  mechanism:** rather than change the score itself, the agentic layer (`src/agent.py`) checks
+  the energy gap directly and surfaces a `⚠️ Low confidence` warning alongside the score. A
+  true in-score penalty is still an open option if a future version wants the ranking itself
+  (not just the confidence flag) to change.
 - Let `UserProfile` express more than one favorite genre/mood, or weighted preferences, to
   better represent blended taste.
 - Add a diversity/re-ranking pass so the top 5 don't cluster around one or two songs from the

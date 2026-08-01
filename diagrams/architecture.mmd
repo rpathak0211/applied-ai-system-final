@@ -5,32 +5,51 @@ flowchart TD
     end
 
     subgraph "Data Layer"
-        B[load_songs\nparses CSV into Song records]
+        B[load_songs\nparses CSV, skips + logs malformed rows]
     end
 
     subgraph "Recommender Module (src/recommender.py)"
-        C[score_song / Recommender._score\nweighted rule: genre +2.0, mood +1.0,\nenergy closeness, acoustic bonus +0.5]
-        D[recommend_songs / Recommender.recommend\nscore every song, sort, take top k]
-        E[explain_recommendation\nbuild human-readable reasons list]
+        C[score_song\nweighted rule: genre, mood,\nenergy closeness, acoustic bonus]
+        D[recommend_songs\nscore every song, sort, take top k]
+    end
+
+    subgraph "Agentic Layer (src/agent.py)"
+        P[Plan\npick scoring weights\nstart at DEFAULT_WEIGHTS]
+        ACT[Act\nrun recommend_songs with\ncurrent weights]
+        CHK{Check\nenergy gap <= 0.35?\nscore >= confidence floor?}
+        RP[Re-plan\nraise energy weight,\nretry up to 3 attempts]
+        STOP[Stop early\nissue isn't fixable\nby re-weighting]
     end
 
     subgraph "CLI Entry Point (src/main.py)"
-        F[main\nruns PROFILES through the recommender]
+        F[main\nconfigures logging,\nruns PROFILES through the agent]
     end
 
-    G[Output: ranked top-k songs\nwith score + explanation]
+    G[Output: ranked top-k songs\n+ confidence flag\n+ explanation per song]
+    LOG[(logs/app.log\n+ console)]
 
-    subgraph "Tests (tests/test_recommender.py)"
-        H[pytest suite\nvalidates scoring + ranking behavior]
+    subgraph "Tests"
+        H1[tests/test_recommender.py\nscoring + ranking rules]
+        H2[tests/test_agent.py\nplan/act/check loop,\nadversarial + no-match cases]
     end
 
     A1 --> B
-    B --> C
-    A2 --> C
+    B --> ACT
+    A2 --> ACT
+    P --> ACT
+    ACT --> C
     C --> D
-    D --> E
-    E --> G
-    F --> D
-    F --> G
-    C -.-> H
-    D -.-> H
+    D --> CHK
+    CHK -- fail, fixable --> RP
+    RP --> P
+    CHK -- fail, not fixable --> STOP
+    CHK -- pass --> G
+    STOP --> G
+    F --> P
+    P -.-> LOG
+    CHK -.-> LOG
+    RP -.-> LOG
+    C -.-> H1
+    D -.-> H1
+    ACT -.-> H2
+    CHK -.-> H2
