@@ -219,3 +219,38 @@ confidently the system reported a bad recommendation as a good one — the score
 indication that the energy match was terrible, which is a useful, small-scale reminder of how
 real recommender systems can be confidently wrong in ways that aren't visible from the score
 or ranking alone.
+
+### Working with AI on the agentic layer
+
+I used Claude Code to design and implement the plan → act → check loop in `src/agent.py`,
+rather than writing that logic from scratch. That collaboration was genuinely useful, but it
+also produced one mistake worth being honest about — and both are more instructive than a
+clean success story would be.
+
+**A helpful suggestion:** when I asked for an "advanced AI feature," the assistant didn't just
+pick one — it checked this repo's actual `requirements.txt` and environment first, found no
+LLM API key or SDK configured, and used that to rule out RAG and fine-tuning before
+recommending an agentic self-check loop as the feature that was both feasible *and* directly
+useful, since it targeted a weakness (the adversarial-profile failure mode) I'd already
+documented in this file. That grounded the recommendation in my actual project constraints
+instead of offering a generic menu of AI buzzwords.
+
+**A flawed suggestion — and how it was caught:** the first version of the retry logic raised
+the agent's energy weight and retried whenever *any* guardrail check failed, not just when the
+failure was an energy mismatch. That was wrong: for a profile with no genre or mood match
+anywhere in the catalog, raising the energy weight doesn't fix the real problem, but it
+*did* incidentally inflate that profile's score past the confidence floor — flipping the
+result to "confident" for a reason that had nothing to do with the actual match quality. I
+didn't catch this by reading the code; I caught it because `pytest` failed on
+`test_no_match_profile_is_flagged_low_confidence` with `assert True is False`. That's the
+concrete lesson: a plausible-sounding fix can pass a quick read and still be wrong in a way
+that only shows up when you run it against a case designed to break it. The fix — only retry
+when the specific issue flagged is one the available lever can plausibly address — is now
+tested directly in `tests/test_agent.py`.
+
+**Where this leaves the system's limitations:** the agentic layer only ever *reports* the
+catalog-level limitations described in Section 6 above — the tiny catalog, exact-string
+genre matching, the single-facet user model — it doesn't fix any of them. A weight change
+can't manufacture a better-matching song that isn't in an 18-song CSV. That's a deliberate
+scope decision, not an oversight: the goal was to stop the system from being *silently* wrong,
+not to pretend a re-weighting loop can substitute for more or better data.
