@@ -244,7 +244,72 @@ indication that the energy match was terrible, which is a useful, small-scale re
 real recommender systems can be confidently wrong in ways that aren't visible from the score
 or ranking alone.
 
-### Working with AI on the agentic layer
+See Section 10 below for how AI collaboration shaped `src/agent.py` specifically, including
+one helpful suggestion and one flawed one.
+
+---
+
+## 10. Reflection and Ethics
+
+### What are the limitations or biases in your system?
+
+The full list with evidence is in Section 6, but the two that matter most: **genre and mood
+matching is all-or-nothing string equality** ("pop" vs. "indie pop" scores identically to
+"pop" vs. "classical" — both zero — even though the former pair is musically close), and
+**genre+mood together (+3.0) outweigh the entire energy term (capped at +1.0)**, so a song
+can win purely on genre/mood even when its energy is a poor fit. That second bias is the one
+this project's agentic layer targets directly: it can't fix the underlying data-level gap
+(there's no better-matching song to substitute in an 18-song catalog), but it stops the system
+from *hiding* that the gap exists. It's a bias-detection fix, not a bias-removal one — the
+recommender still under-serves any user whose taste doesn't fit neatly into one favorite
+genre and one favorite mood (see the "Single-facet user model" bullet in Section 6).
+
+### Could your AI be misused, and how would you prevent that?
+
+Two concrete vectors, both real for this specific system rather than generic AI-safety
+boilerplate:
+
+- **Metadata gaming.** The scoring rule is exact-match and fully transparent (the explanation
+  string literally names which bonuses fired). Anyone who can edit `data/songs.csv` — e.g. an
+  artist or catalog owner in a real deployment — could reverse-engineer the weights and tag a
+  song with whatever genre/mood/energy values maximize its score across the most user
+  profiles, regardless of whether the song actually sounds like that. **Mitigation:** don't
+  trust self-reported song metadata in a real ingestion pipeline; validate it against
+  independent signals (audio analysis, other listeners' tags) before it can affect ranking,
+  and treat a suspiciously "perfect" score (e.g. hitting every bonus at once) as a signal for
+  review rather than automatic trust — the `confidence_score` already computed per
+  recommendation would need to be inverted for this use (high score + implausible metadata =
+  flag, not reward).
+- **Logging real user data without limits.** `logs/app.log` currently logs the scoring weights
+  and guardrail issues for every run, which for this project's synthetic `PROFILES` dict is
+  harmless. If this pattern were reused in a real product where `UserProfile` came from actual
+  listener accounts, that log would be recording behavioral/taste data indefinitely with no
+  rotation, redaction, or retention limit — a privacy liability, not just a debugging
+  convenience. **Mitigation:** in a real deployment, log aggregate guardrail outcomes (pass/
+  fail counts, confidence distributions) for monitoring, not per-user profile contents, and add
+  log rotation and a retention policy before ever pointing this at real user data.
+
+### What surprised you while testing your AI's reliability?
+
+Two things, both caught only by actually running the system rather than reasoning about it on
+paper:
+
+1. **A rising score is not proof of a better match.** Watching the adversarial profile's score
+   climb from 3.30 → 3.60 → 3.90 as the agent raised its energy weight across three attempts —
+   while "Rainlight Sonata" stayed the #1 pick throughout and its actual energy never got any
+   closer to the requested target — was a concrete demonstration that a metric can look like
+   it's improving while the thing it's supposed to measure hasn't moved at all. That's exactly
+   why `confidence_score` (Section 7) is computed from the energy gap directly instead of from
+   that climbing score.
+2. **Fixing one failure mode silently created another.** The first retry rule (raise the
+   energy weight on any failed check) passed a code read but failed a test: it happened to push
+   an unrelated "no genre/mood match at all" profile's score back above the confidence floor,
+   making the agent falsely confident for a reason that had nothing to do with the actual
+   problem. I expected the guardrails to fail independently if they failed at all; I didn't
+   expect a fix aimed at one guardrail to accidentally satisfy a different one. See the
+   detailed account in the AI Collaboration section immediately below.
+
+### AI Collaboration: A Helpful Suggestion and a Flawed One
 
 I used Claude Code to design and implement the plan → act → check loop in `src/agent.py`,
 rather than writing that logic from scratch. That collaboration was genuinely useful, but it
