@@ -33,6 +33,25 @@ when you can't.
 
 ---
 
+## Portfolio
+
+**Code:** [github.com/rpathak0211/applied-ai-system-final](https://github.com/rpathak0211/applied-ai-system-final)
+
+**What this project says about me as an AI engineer:** I start from a system's documented
+weaknesses instead of chasing the newest technique — the agentic layer in this repo exists
+because I'd already written down, in `model_card.md`, exactly where the original scoring
+rule failed silently, and I built the fix to target that specific failure rather than
+bolting on a generic feature. I also pick the smallest mechanism that fits the actual
+constraint: an agentic self-check loop over RAG or fine-tuning, because there was no LLM API
+key configured for this project and the failure mode I was targeting didn't need one. And I
+verify reliability claims with tests instead of assertions — the retry-logic bug in
+`src/agent.py` (documented in Section 10 of the model card) was caught by a test written
+specifically to break it, not by re-reading the code and deciding it looked fine. Given the
+choice, I'd rather ship a system that honestly reports "I'm not confident about this" than
+one that always looks confident.
+
+---
+
 ## Architecture Overview
 
 Full diagram source: [`diagrams/architecture.mmd`](diagrams/architecture.mmd)
@@ -143,10 +162,183 @@ CSV catalog.
 
 ---
 
+## Reproducible Execution Evidence
+
+Everything below is real, verbatim terminal output from this exact repo (captured
+2026-08-01) — nothing here is hand-written or hypothetical. Reproduce it yourself with:
+
+```bash
+python -m src.main
+pytest -v
+```
+
+### ✅ End-to-end system run (3 inputs)
+
+One command, `python -m src.main`, runs the full pipeline — `load_songs()` → the agentic
+plan → act → check loop → ranked, explained output — for each profile in `PROFILES`. Three
+of the four are pulled out here as the representative end-to-end cases (the fourth, "Deep
+Intense Rock," is a second clean-match case and adds no new behavior beyond input 1 below).
+
+**Input 1:** `{genre: pop, mood: happy, energy: 0.9, likes_acoustic: false}`
+
+```
+=== High-Energy Pop ===
+User profile: {'genre': 'pop', 'mood': 'happy', 'energy': 0.9, 'likes_acoustic': False}
+Confidence: 0.92
+
+Top recommendations:
+
+1. Sunrise City — Neon Echo (pop/happy)
+   Score: 3.92
+   Because: genre match (+2.00), mood match (+1.00), energy closeness (+0.92)
+
+2. Gym Hero — Max Pulse (pop/intense)
+   Score: 2.97
+   Because: genre match (+2.00), energy closeness (+0.97)
+
+3. Rooftop Lights — Indigo Parade (indie pop/happy)
+   Score: 1.86
+   Because: mood match (+1.00), energy closeness (+0.86)
+
+4. Storm Runner — Voltline (rock/intense)
+   Score: 0.99
+   Because: energy closeness (+0.99)
+
+5. Sunset Highway — Coral Drift (house/euphoric)
+   Score: 0.98
+   Because: energy closeness (+0.98)
+```
+
+**Input 2:** `{genre: lofi, mood: chill, energy: 0.3, likes_acoustic: true}`
+
+```
+=== Chill Lofi ===
+User profile: {'genre': 'lofi', 'mood': 'chill', 'energy': 0.3, 'likes_acoustic': True}
+Confidence: 0.95
+
+Top recommendations:
+
+1. Library Rain — Paper Lanterns (lofi/chill)
+   Score: 4.45
+   Because: genre match (+2.00), mood match (+1.00), energy closeness (+0.95), acoustic bonus (+0.50)
+
+2. Midnight Coding — LoRoom (lofi/chill)
+   Score: 4.38
+   Because: genre match (+2.00), mood match (+1.00), energy closeness (+0.88), acoustic bonus (+0.50)
+
+3. Focus Flow — LoRoom (lofi/focused)
+   Score: 3.40
+   Because: genre match (+2.00), energy closeness (+0.90), acoustic bonus (+0.50)
+
+4. Spacewalk Thoughts — Orbit Bloom (ambient/chill)
+   Score: 2.48
+   Because: mood match (+1.00), energy closeness (+0.98), acoustic bonus (+0.50)
+
+5. Harvest Moon Waltz — Willow Creek (folk/nostalgic)
+   Score: 1.50
+   Because: energy closeness (+1.00), acoustic bonus (+0.50)
+```
+
+**Input 3 (adversarial — conflicting signals):** `{genre: classical, mood: melancholy,
+energy: 0.9, likes_acoustic: false}`
+
+```
+=== Adversarial: High-Energy Melancholy ===
+User profile: {'genre': 'classical', 'mood': 'melancholy', 'energy': 0.9, 'likes_acoustic': False}
+Confidence: 0.30
+
+⚠️  Low confidence after 3 attempt(s): energy_mismatch: top pick's energy (0.20) is 0.70 away from the requested target (0.90)
+
+Top recommendations:
+
+1. Rainlight Sonata — Elena Cho (classical/melancholy)
+   Score: 3.90
+   Because: genre match (+2.00), mood match (+1.00), energy closeness (+0.90)
+
+2. Storm Runner — Voltline (rock/intense)
+   Score: 2.97
+   Because: energy closeness (+2.97)
+
+3. Sunset Highway — Coral Drift (house/euphoric)
+   Score: 2.94
+   Because: energy closeness (+2.94)
+
+4. Gym Hero — Max Pulse (pop/intense)
+   Score: 2.91
+   Because: energy closeness (+2.91)
+
+5. Broken Compass — Ashen Wolves (metal/angry)
+   Score: 2.85
+   Because: energy closeness (+2.85)
+```
+
+### ✅ AI feature behavior (agentic plan → act → check loop)
+
+Input 3 above is the case where the agentic feature actually does something visible: the
+plain scorer's #1 pick has a strong genre+mood match but a badly wrong energy, so the check
+step fails and the agent re-plans. This is `logs/app.log`, generated by the exact same run
+as Input 3 — the agent's real reasoning, not a paraphrase of it:
+
+```
+2026-08-01 18:00:38,903 INFO [src.agent] Attempt 1: scoring catalog with weights={'genre': 2.0, 'mood': 1.0, 'energy': 1.0, 'acoustic': 0.5}
+2026-08-01 18:00:38,904 WARNING [src.agent] Attempt 1 flagged issues: ["energy_mismatch: top pick's energy (0.20) is 0.70 away from the requested target (0.90)"]
+2026-08-01 18:00:38,904 INFO [src.agent] Re-planning: raising energy weight to 2.00 and retrying.
+2026-08-01 18:00:38,904 INFO [src.agent] Attempt 2: scoring catalog with weights={'genre': 2.0, 'mood': 1.0, 'energy': 2.0, 'acoustic': 0.5}
+2026-08-01 18:00:38,904 WARNING [src.agent] Attempt 2 flagged issues: ["energy_mismatch: top pick's energy (0.20) is 0.70 away from the requested target (0.90)"]
+2026-08-01 18:00:38,904 INFO [src.agent] Re-planning: raising energy weight to 3.00 and retrying.
+2026-08-01 18:00:38,904 INFO [src.agent] Attempt 3: scoring catalog with weights={'genre': 2.0, 'mood': 1.0, 'energy': 3.0, 'acoustic': 0.5}
+2026-08-01 18:00:38,904 WARNING [src.agent] Attempt 3 flagged issues: ["energy_mismatch: top pick's energy (0.20) is 0.70 away from the requested target (0.90)"]
+2026-08-01 18:00:38,904 WARNING [src.agent] Stopping after attempt 3; returning best-effort recommendations with the mismatch flagged instead of hiding it.
+```
+
+Read attempt-by-attempt: **plan** (weights start at the defaults) → **act** (score + rank
+the catalog) → **check** (energy gap 0.70 > the 0.35 threshold → fails) → **re-plan** (raise
+the energy weight, since that's the one lever that could plausibly fix an energy gap) →
+repeat twice more → **stop** (3 attempts used, the gap never closed because it's a data
+limitation, not a weighting problem — see model_card.md Section 6). Inputs 1 and 2 above
+never appear in `logs/app.log` beyond a single "passed all guardrails" line, because their
+first attempt already clears both checks — the loop only does visible work when something
+fails.
+
+### ✅ Reliability / guardrail / evaluation behavior
+
+**Automated tests** (`pytest -v`, unedited output — 6/6 passed):
+
+```
+============================= test session starts ==============================
+collecting ... collected 6 items
+
+tests/test_agent.py::test_confident_match_stops_after_first_attempt PASSED [ 16%]
+tests/test_agent.py::test_adversarial_profile_is_flagged_not_hidden PASSED [ 33%]
+tests/test_agent.py::test_no_match_profile_stops_early_with_no_fixable_issue PASSED [ 50%]
+tests/test_agent.py::test_empty_catalog_raises_value_error PASSED        [ 66%]
+tests/test_recommender.py::test_recommend_returns_songs_sorted_by_score PASSED [ 83%]
+tests/test_recommender.py::test_explain_recommendation_returns_non_empty_string PASSED [100%]
+
+============================== 6 passed in 0.01s ===============================
+```
+
+**Confidence scoring** — a numeric 0.0-1.0 rating on every recommendation, computed from the
+same energy-gap/score-floor signals the guardrail checks (see Design Decisions for why):
+Input 1 → 0.92, Input 2 → 0.95, Input 3 → 0.30. The full human-reviewed pass/fail table
+across all 7 evaluated cases (these 3 plus 4 more edge cases) is in the Human Evaluation
+table under Testing Summary below.
+
+### ✅ Clear outputs for each case
+
+| Input | Top Pick | Score | Confidence | Guardrail Result |
+|---|---|---|---|---|
+| 1. High-Energy Pop | Sunrise City | 3.92 | 0.92 | Passed on attempt 1 |
+| 2. Chill Lofi | Library Rain | 4.45 | 0.95 | Passed on attempt 1 |
+| 3. Adversarial: High-Energy Melancholy | Rainlight Sonata | 3.90 | 0.30 | **Flagged** — energy mismatch, 3 attempts |
+
+---
+
 ## Sample Interactions
 
-Three real runs of `python -m src.main` (console logging omitted for readability — the
-full trace for every attempt is in `logs/app.log`).
+The full, unabridged run is in "Reproducible Execution Evidence" above. These are the same
+three cases, pulled out and annotated, to walk through what's actually interesting about
+each one.
 
 **1. A clean match — the agent passes on the first attempt:**
 
