@@ -1,0 +1,36 @@
+flowchart TD
+    subgraph Input
+        A1[data/songs.csv]
+        A2[UserProfile\ngenre, mood, target_energy, likes_acoustic]
+    end
+
+    subgraph "Data Layer"
+        B[load_songs\nparses CSV into Song records]
+    end
+
+    subgraph "Recommender Module (src/recommender.py)"
+        C[score_song / Recommender._score\nweighted rule: genre +2.0, mood +1.0,\nenergy closeness, acoustic bonus +0.5]
+        D[recommend_songs / Recommender.recommend\nscore every song, sort, take top k]
+        E[explain_recommendation\nbuild human-readable reasons list]
+    end
+
+    subgraph "CLI Entry Point (src/main.py)"
+        F[main\nruns PROFILES through the recommender]
+    end
+
+    G[Output: ranked top-k songs\nwith score + explanation]
+
+    subgraph "Tests (tests/test_recommender.py)"
+        H[pytest suite\nvalidates scoring + ranking behavior]
+    end
+
+    A1 --> B
+    B --> C
+    A2 --> C
+    C --> D
+    D --> E
+    E --> G
+    F --> D
+    F --> G
+    C -.-> H
+    D -.-> H
