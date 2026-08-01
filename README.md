@@ -38,7 +38,7 @@ when you can't.
 **Code:** [github.com/rpathak0211/applied-ai-system-final](https://github.com/rpathak0211/applied-ai-system-final)
 
 **What this project says about me as an AI engineer:** I start from a system's documented
-weaknesses instead of chasing the newest technique — the agentic layer in this repo exists
+weaknesses instead of chasing the newest technique the agentic layer in this repo exists
 because I'd already written down, in `model_card.md`, exactly where the original scoring
 rule failed silently, and I built the fix to target that specific failure rather than
 bolting on a generic feature. I also pick the smallest mechanism that fits the actual
