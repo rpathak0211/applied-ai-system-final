@@ -153,6 +153,7 @@ full trace for every attempt is in `logs/app.log`).
 ```
 === High-Energy Pop ===
 User profile: {'genre': 'pop', 'mood': 'happy', 'energy': 0.9, 'likes_acoustic': False}
+Confidence: 0.92
 
 Top recommendations:
 
@@ -170,6 +171,7 @@ Top recommendations:
 ```
 === Chill Lofi ===
 User profile: {'genre': 'lofi', 'mood': 'chill', 'energy': 0.3, 'likes_acoustic': True}
+Confidence: 0.95
 
 Top recommendations:
 
@@ -188,6 +190,7 @@ Top recommendations:
 ```
 === Adversarial: High-Energy Melancholy ===
 User profile: {'genre': 'classical', 'mood': 'melancholy', 'energy': 0.9, 'likes_acoustic': False}
+Confidence: 0.30
 
 ⚠️  Low confidence after 3 attempt(s): energy_mismatch: top pick's energy (0.20) is 0.70 away from the requested target (0.90)
 
@@ -256,28 +259,60 @@ for a small classroom project, not for a long-running production service.
 
 ## Testing Summary
 
-**What worked:** all 6 tests pass — `tests/test_recommender.py`'s original 2 (sorted
-output, non-empty explanations) plus 4 new agent tests covering a clean match (passes on
-attempt 1), the adversarial energy-mismatch case (retries 3 times, ends not-confident),
-an empty catalog (raises `ValueError` instead of crashing on an index error), and a
-no-genre/mood-match profile.
+Reliability here isn't asserted, it's checked four separate ways:
 
-**What didn't work initially:** the first version of the "no match anywhere" test failed.
-The agent's retry strategy (raise the energy weight) was written to fire on *any* failed
-check, so it also fired when the actual problem was "score too low because there's no
-genre/mood match at all" — and raising the energy weight happened to push that low score
-back above the confidence floor, flipping the result to `confident: True` for entirely
-the wrong reason. Running the test suite caught this immediately (`assert True is False`)
-before it shipped. The fix — only retry when the flagged issue is specifically an energy
-mismatch — is described in Design Decisions above.
+- **Automated tests** (`pytest`) — 6/6 passing: 2 in `tests/test_recommender.py` for the
+  scoring/ranking rules, 4 in `tests/test_agent.py` for the plan → act → check loop
+  (clean match, adversarial energy-mismatch, an unfixable no-match case, empty catalog).
+- **Confidence scoring** — every recommendation gets a `confidence_score` (0.0-1.0), see
+  Design Decisions for why it's computed from the energy gap rather than the raw score.
+- **Logging and error handling** — every plan/act/check decision is written to
+  `logs/app.log`; malformed CSV rows are skipped and logged instead of crashing; an empty
+  catalog raises a clear `ValueError` instead of an `IndexError` three calls deep.
+- **Human evaluation** — I manually reviewed 7 real runs (the 4 built-in profiles plus 3
+  additional edge cases) against explicit pass/fail criteria — table below.
 
-**What I learned:** a self-check loop needs to be tested for *unintended interactions*
-between its guardrails, not just each guardrail in isolation — a fix aimed at one failure
-mode can silently paper over a different one if the retry condition isn't scoped
-narrowly enough. I also learned to always run the actual CLI and copy its real output
-into documentation rather than writing hypothetical example output — doing that surfaced
-the exact score progression (3.30 → 3.60 → 3.90) used as evidence in the Sample
-Interactions section above, which I would not have gotten right by hand.
+**Summary:** 6/6 automated tests passed. Confidence scores across the 4 built-in profiles
+averaged **0.78** — a tight 0.92-0.95 for the three genuine matches, and a correctly low
+0.30 for the adversarial profile, where the top pick's energy missed the target by 0.70.
+All 7 manually-reviewed cases below passed, including two edge cases (an empty catalog and
+a real-catalog profile with no genre/mood match at all) that weren't part of the original
+four stress-test profiles.
+
+### Human evaluation
+
+| Test Input | Evaluation Criteria | Result |
+|---|---|---|
+| High-Energy Pop (`genre=pop, mood=happy, energy=0.9`) | Top pick matches genre+mood; energy gap ≤ 0.35; confidence ≥ 0.8 | **Pass** — Sunrise City, gap 0.02, confidence 0.92 |
+| Chill Lofi (`genre=lofi, mood=chill, energy=0.3, likes_acoustic=true`) | Top pick matches genre+mood+acoustic; energy gap ≤ 0.35 | **Pass** — Library Rain, gap 0.05, confidence 0.95 |
+| Deep Intense Rock (`genre=rock, mood=intense, energy=0.85`) | Top pick matches genre+mood; energy gap ≤ 0.35 | **Pass** — Storm Runner, gap 0.06, confidence 0.94 |
+| Adversarial (`genre=classical, mood=melancholy, energy=0.9`) | System flags low confidence rather than presenting a bad energy match as good | **Pass** — flagged after 3 attempts, confidence 0.30, exact 0.70 gap named |
+| No genre/mood match anywhere, but a song's energy happens to match exactly (`genre=opera, mood=furious, energy=0.5`) | System shouldn't require a genre/mood match if energy alone is a strong fit | **Pass** — "Dust and Diesel" (country/nostalgic), gap 0.00, confidence 1.0 |
+| No genre/mood match, and no song's energy is close either (`genre=opera, mood=furious, energy=0.99`) | System stops after 1 attempt instead of retrying a fix that can't work, and still flags low confidence | **Pass** — stopped after attempt 1, confidence 0.5, issue correctly identified as `low_confidence` (not `energy_mismatch`) |
+| Empty song catalog | Fails loudly and clearly instead of crashing on an index error | **Pass** — raises `ValueError: Cannot recommend songs: the catalog is empty.` |
+
+### What didn't work initially
+
+The first version of the "no match anywhere" test failed. The agent's retry strategy
+(raise the energy weight) was written to fire on *any* failed check, so it also fired
+when the actual problem was "score too low because there's no genre/mood match at all" —
+and raising the energy weight happened to push that low score back above the confidence
+floor, flipping the result to `confident: True` for entirely the wrong reason. Running the
+test suite caught this immediately (`assert True is False`) before it shipped. The fix —
+only retry when the flagged issue is specifically an energy mismatch — is described in
+Design Decisions above.
+
+### What I learned
+
+A self-check loop needs to be tested for *unintended interactions* between its guardrails,
+not just each guardrail in isolation — a fix aimed at one failure mode can silently paper
+over a different one if the retry condition isn't scoped narrowly enough. That's also why
+`confidence_score` is computed from the energy gap directly rather than the raw score: the
+raw score has the same inflate-without-improving problem the retry bug did. I also learned
+to always run the actual CLI against the real catalog and copy its real output into
+documentation — doing that surfaced the exact "Dust and Diesel" and "Broken Compass" edge
+cases in the human-eval table above, neither of which I would have thought to construct by
+hand.
 
 ---
 

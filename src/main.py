@@ -50,6 +50,7 @@ def print_recommendations(profile_name: str, user_prefs: dict, songs, k: int = 5
 
     print(f"\n=== {profile_name} ===")
     print(f"User profile: {user_prefs}")
+    print(f"Confidence: {result['confidence_score']:.2f}")
 
     if not result["confident"]:
         last_issues = result["trace"][-1]["issues"]

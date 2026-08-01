@@ -47,8 +47,10 @@ target, and is its score above a confidence floor of 1.0? If a check fails and t
 one weight-tuning can plausibly fix (an energy gap), it raises the energy weight and retries,
 up to 3 attempts. If the failure can't be fixed that way — e.g. no genre/mood match exists in
 the catalog at all — it stops immediately rather than retrying blindly. Every attempt is
-logged to `logs/app.log`. This directly targets the "silent failure" bias described in
-Section 6: it can't fix a data-level gap, but it will name the gap instead of hiding it.
+logged to `logs/app.log`, and alongside the ranked list the agent returns a numeric
+`confidence_score` (0.0-1.0, see Section 7) so "how sure is this?" has an actual answer
+instead of just a pass/fail flag. This directly targets the "silent failure" bias described
+in Section 6: it can't fix a data-level gap, but it will name the gap instead of hiding it.
 
 ---
 
@@ -162,6 +164,7 @@ matches without ever signaling *how* partial they are.
 ```
 === Adversarial: High-Energy Melancholy ===
 User profile: {'genre': 'classical', 'mood': 'melancholy', 'energy': 0.9, 'likes_acoustic': False}
+Confidence: 0.30
 
 ⚠️  Low confidence after 3 attempt(s): energy_mismatch: top pick's energy (0.20) is 0.70 away from the requested target (0.90)
 
@@ -179,12 +182,33 @@ directly rather than trusting the score to reflect it. The headline result: the 
 unchanged, but the system's behavior changed from confidently wrong to honestly uncertain.
 
 Re-ran "High-Energy Pop" and "Deep Intense Rock" with genre-match weight halved (2.0 → 1.0)
-and energy-closeness weight doubled (1.0 → 2.0). Full results are in the README's
-"Experiments You Tried" section — the headline finding is that the top-5 *ordering* didn't
-change at all for either profile, only the score gaps compressed. That was a genuine surprise
-going in: doubling the energy weight felt like it should have let a strong energy-only match
-overtake a genre match, but a genre+mood match's combined ceiling (2.0 either way) still beat
-any single energy-only score in this catalog.
+and energy-closeness weight doubled (1.0 → 2.0). The headline finding: the top-5 *ordering*
+didn't change at all for either profile, only the score gaps compressed (e.g. on "Deep Intense
+Rock," Gym Hero vs. Rooftop Lights went from a 1.11-point gap to a 0.22-point gap). That was a
+genuine surprise going in — doubling the energy weight felt like it should have let a strong
+energy-only match overtake a genre match, but a genre+mood match's combined ceiling (2.0
+either way) still beat any single energy-only score in this catalog. This 18-song catalog
+isn't diverse enough to reveal how sensitive the ranking really is to this weight; a bigger,
+more varied catalog would likely show bigger swings.
+
+### Confidence scoring
+
+Each agent run now returns a `confidence_score` (0.0-1.0), derived directly from the same
+energy-gap and score-floor checks the guardrails use — not from the raw weighted score, since
+that score climbs every time the agent raises the energy weight even when the match itself
+hasn't improved (see the 3.30 → 3.90 climb above). Across the four built-in profiles:
+
+| Profile | Confidence | Guardrail result |
+|---|---|---|
+| High-Energy Pop | 0.92 | Passed on attempt 1 |
+| Chill Lofi | 0.95 | Passed on attempt 1 |
+| Deep Intense Rock | 0.94 | Passed on attempt 1 |
+| Adversarial: High-Energy Melancholy | 0.30 | Flagged after 3 attempts |
+
+Average confidence across these four profiles: **0.78**. The three genuine matches cluster
+tightly in the low-0.9s; the adversarial profile's 0.30 is the clearest possible signal that
+something is wrong, which is the entire point — a confidence score that stayed high here would
+mean the metric was just echoing the same blind spot as the raw score.
 
 ---
 

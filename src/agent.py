@@ -55,6 +55,25 @@ def _check(user_prefs: Dict, top_song: Dict, top_score: float) -> List[str]:
     return issues
 
 
+def _confidence_score(user_prefs: Dict, top_song: Dict, top_score: float) -> float:
+    """Rates how sure the agent is about the top pick, on a 0.0-1.0 scale.
+
+    Deliberately reuses the same two signals _check() already looks at (energy gap,
+    score floor) rather than the raw weighted score -- the raw score climbs every time
+    the agent raises the energy weight even when the actual match doesn't improve (see
+    the adversarial case in model_card.md), so scoring confidence off of it directly
+    would let a re-weighted attempt look more confident without actually being a better
+    match.
+    """
+    target_energy = user_prefs.get("energy")
+    confidence = 1.0 - min(abs(top_song["energy"] - target_energy), 1.0) if target_energy is not None else 1.0
+
+    if top_score < MIN_CONFIDENT_SCORE:
+        confidence = min(confidence, 0.5)
+
+    return round(confidence, 2)
+
+
 def recommend_with_agent(user_prefs: Dict, songs: List[Dict], k: int = 5) -> Dict:
     """Runs the plan -> act -> check loop and returns recommendations plus a trace.
 
@@ -63,11 +82,13 @@ def recommend_with_agent(user_prefs: Dict, songs: List[Dict], k: int = 5) -> Dic
         "recommendations": [(song, score, explanation), ...],
         "trace": [{"attempt": int, "weights": {...}, "issues": [...]}, ...],
         "confident": bool,
+        "confidence_score": float,  # 0.0-1.0, see _confidence_score()
       }
     """
     weights = dict(DEFAULT_WEIGHTS)
     trace = []
     ranked = []
+    top_song = top_score = None
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         logger.info("Attempt %d: scoring catalog with weights=%s", attempt, weights)
@@ -109,4 +130,5 @@ def recommend_with_agent(user_prefs: Dict, songs: List[Dict], k: int = 5) -> Dic
         "recommendations": ranked,
         "trace": trace,
         "confident": not trace[-1]["issues"],
+        "confidence_score": _confidence_score(user_prefs, top_song, top_score),
     }

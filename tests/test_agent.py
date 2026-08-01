@@ -27,6 +27,7 @@ def test_confident_match_stops_after_first_attempt():
     assert result["confident"] is True
     assert len(result["trace"]) == 1
     assert result["recommendations"][0][0]["title"] == "Sunrise City"
+    assert result["confidence_score"] >= 0.9
 
 
 def test_adversarial_profile_is_flagged_not_hidden():
@@ -42,6 +43,10 @@ def test_adversarial_profile_is_flagged_not_hidden():
     # The agent re-plans by raising the energy weight on every retry.
     assert result["trace"][1]["weights"]["energy"] > result["trace"][0]["weights"]["energy"]
     assert result["trace"][2]["weights"]["energy"] > result["trace"][1]["weights"]["energy"]
+    # Confidence is pinned to the actual 0.70 energy gap, not the inflated score --
+    # raising the energy weight made the raw score climb (3.30 -> 3.90) without the
+    # match actually improving, so confidence must NOT climb along with it.
+    assert result["confidence_score"] <= 0.35
 
 
 def test_no_match_profile_stops_early_with_no_fixable_issue():
